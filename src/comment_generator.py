@@ -6,6 +6,7 @@ import io
 import os
 import stat
 import time
+import re
 from typing import List, Dict, Set, Tuple, Optional
 from docx import Document
 from docx.shared import Pt
@@ -103,6 +104,18 @@ class CommentWriter:
     # 写入格式配置
     FONT_NAME = "宋体"
     FONT_SIZE = Pt(10.5)  # 五号字
+
+    def _clear_paragraph(self, para) -> None:
+        try:
+            p = para._element
+            for child in list(p):
+                p.remove(child)
+        except Exception:
+            try:
+                for r in list(para.runs):
+                    r.text = ""
+            except Exception:
+                pass
     
     def write_to_document(self, student: StudentInfo) -> Tuple[bool, str]:
         """
@@ -133,7 +146,8 @@ class CommentWriter:
             doc = Document(io.BytesIO(data))
             
             # 查找"教师评阅"位置并写入
-            success = self._find_and_write(doc, student.comment)
+            review_text = self._build_review_text(student)
+            success = self._find_and_write(doc, review_text)
             
             if not success:
                 return False, f"未找到教师评阅位置 | 路径: {file_path}"
@@ -197,6 +211,139 @@ class CommentWriter:
             error_detail = traceback.format_exc()
             print(f"写入错误详情(路径={file_path}):\n{error_detail}")
             return False, f"{brief} | 路径: {file_path}"
+
+    def _build_review_text(self, student: StudentInfo) -> str:
+        parts: List[str] = []
+        if getattr(student, "score", None) is not None:
+            try:
+                parts.append(f"成绩：{int(float(student.score))}")
+            except Exception:
+                parts.append(f"成绩：{student.score}")
+        if student.comment:
+            parts.append(f"评语：{student.comment.strip()}")
+        return "\n".join([p for p in parts if p]).strip()
+
+    def _looks_like_date(self, text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
+        if "年" in t and "月" in t and ("日" in t or t.endswith("月")):
+            return True
+        if re.search(r"(19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?", t):
+            return True
+        if re.search(r"\d{4}\s*[\-/\.]\s*\d{1,2}\s*[\-/\.]\s*\d{1,2}", t):
+            return True
+        return False
+
+    def _overwrite_review_in_paragraphs(self, paragraphs, review_text: str, aggressive_clear: bool) -> bool:
+        hit_tokens = ("教师评阅", "教师评语")
+        sig_tokens = ("教师签名", "签名", "日期")
+
+        for i, para in enumerate(paragraphs):
+            t = para.text or ""
+            if not any(tok in t for tok in hit_tokens):
+                continue
+
+            colon_pos = t.find("：")
+            if colon_pos < 0:
+                colon_pos = t.find(":")
+            prefix = t[: colon_pos + 1] if colon_pos >= 0 else "教师评阅："
+
+            sig_positions = [t.find(tok) for tok in sig_tokens if t.find(tok) >= 0]
+            sig_pos = min(sig_positions) if sig_positions else -1
+            review_body = ("\n" + (review_text or "").strip()) if (review_text or "").strip() else ""
+
+            if sig_pos >= 0:
+                self._rewrite_para_keep_suffix_runs(para, sig_pos, prefix, review_body)
+                return True
+
+            self._clear_paragraph(para)
+            title_run = para.add_run(prefix)
+            self._apply_format(title_run)
+            body_run = para.add_run(review_body)
+            self._apply_format(body_run)
+
+            end_idx: Optional[int] = None
+            scan_limit = len(paragraphs) if aggressive_clear else min(len(paragraphs), i + 9)
+            for j in range(i + 1, scan_limit):
+                tj = (paragraphs[j].text or "").strip()
+                if not tj:
+                    continue
+                if any(tok in tj for tok in sig_tokens) or self._looks_like_date(tj):
+                    end_idx = j
+                    break
+
+            if aggressive_clear and end_idx is None:
+                end_idx = len(paragraphs)
+
+            if end_idx is not None:
+                for k in range(i + 1, end_idx):
+                    tk = (paragraphs[k].text or "").strip()
+                    if not tk:
+                        continue
+                    self._clear_paragraph(paragraphs[k])
+            return True
+        return False
+
+    def _rewrite_para_keep_suffix_runs(self, para, sig_char_index: int, prefix: str, review_body: str):
+        runs = list(para.runs)
+        pos = 0
+        sig_run_idx: Optional[int] = None
+        sig_offset = 0
+        for idx, r in enumerate(runs):
+            rt = r.text or ""
+            if pos + len(rt) > sig_char_index:
+                sig_run_idx = idx
+                sig_offset = sig_char_index - pos
+                break
+            pos += len(rt)
+
+        if sig_run_idx is None:
+            self._clear_paragraph(para)
+            title_run = para.add_run(prefix)
+            self._apply_format(title_run)
+            body_run = para.add_run(review_body)
+            self._apply_format(body_run)
+            return
+
+        to_remove = runs[:sig_run_idx]
+        for r in to_remove:
+            try:
+                para._element.remove(r._element)
+            except Exception:
+                pass
+
+        sig_run = runs[sig_run_idx]
+        if sig_offset > 0:
+            try:
+                sig_run.text = (sig_run.text or "")[sig_offset:]
+            except Exception:
+                pass
+
+        prefix_run = para.add_run(prefix)
+        self._apply_format(prefix_run)
+        body_run = para.add_run(review_body)
+        self._apply_format(body_run)
+        try:
+            body_run.add_break()
+        except Exception:
+            try:
+                body_run.text = (body_run.text or "") + "\n"
+            except Exception:
+                pass
+
+        p = para._element
+        try:
+            sig_el = sig_run._element
+            sig_pos = p.index(sig_el)
+
+            p.remove(body_run._element)
+            p.remove(prefix_run._element)
+
+            p.insert(sig_pos, body_run._element)
+            p.insert(sig_pos, prefix_run._element)
+        except Exception:
+            pass
     
     def _find_and_write(self, doc: Document, comment: str) -> bool:
         """
@@ -209,46 +356,15 @@ class CommentWriter:
         Returns:
             是否找到并写入
         """
-        # 先在段落中查找
-        for i, para in enumerate(doc.paragraphs):
-            if "教师评阅" in para.text or "教师评语" in para.text:
-                # 在下一段落写入，或者在当前段落后添加
-                if "：" in para.text or ":" in para.text:
-                    idx = para.text.find("：")
-                    if idx < 0:
-                        idx = para.text.find(":")
-                    prefix = para.text[: idx + 1] if idx >= 0 else "教师评阅："
-                    para.clear()
-                    title_run = para.add_run(prefix)
-                    self._apply_format(title_run)
-                    comment_run = para.add_run(comment)
-                    self._apply_format(comment_run)
-                elif i + 1 < len(doc.paragraphs):
-                    next_para = doc.paragraphs[i + 1]
-                    # 清空原有内容并写入新评语
-                    next_para.clear()
-                    run = next_para.add_run(comment)
-                    self._apply_format(run)
-                else:
-                    # 添加新段落
-                    new_para = doc.add_paragraph()
-                    run = new_para.add_run(comment)
-                    self._apply_format(run)
-                return True
-        
-        # 在表格中查找（关键修复：很多实训报告的教师评阅在表格中）
+        if self._overwrite_review_in_paragraphs(doc.paragraphs, comment, aggressive_clear=False):
+            return True
+
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
-                    # 遍历单元格中的每个段落
-                    for para in cell.paragraphs:
-                        if "教师评阅" in para.text:
-                            # 找到"教师评阅："所在段落，直接在后面追加评语
-                            # 不清空，不新建段落，直接追加文字
-                            comment_run = para.add_run(comment)
-                            self._apply_format(comment_run)
-                            return True
-        
+                    if self._overwrite_review_in_paragraphs(cell.paragraphs, comment, aggressive_clear=True):
+                        return True
+
         return False
     
     def _append_comment(self, doc: Document, comment: str):

@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from docx import Document
+from src.lab_name_fixer import LabNameFixer
 
 
 @dataclass
@@ -19,6 +20,7 @@ class StudentInfo:
     student_name: str = ""
     course_name: str = ""
     training_name: str = ""
+    lab_name: str = ""
     score: Optional[float] = None
     score_source: str = ""
     word_count: int = 0
@@ -45,6 +47,14 @@ class StudentInfo:
 
 class DocParser:
     """Word 文档解析器"""
+    
+    def __init__(self):
+        self.students: List[StudentInfo] = []
+        self.course_name: str = ""
+        self.training_name: str = ""
+        self.min_words: int = 0
+        self.max_words: int = 0
+        self.lab_name_fixer = LabNameFixer()
     
     # 字段匹配模式（增强版，支持多种格式）
     PATTERNS = {
@@ -73,12 +83,7 @@ class DocParser:
             r"项目名称[：:\s]*([^\n\r，,]{2,30})",
         ],
     }
-    
-    def __init__(self):
-        self.students: List[StudentInfo] = []
-        self.min_words: int = 0
-        self.max_words: int = 0
-    
+
     def parse_folder(self, folder_path: str) -> List[StudentInfo]:
         """
         解析文件夹中的所有 Word 文档
@@ -108,19 +113,36 @@ class DocParser:
             self.min_words = 0
             self.max_words = 0
 
-        for student in self.students:
-            if student.score_source == "teacher":
-                continue
-            if student.score is not None:
-                continue
+        return self.students
+
+    def apply_auto_scores(self, students: List[StudentInfo]) -> int:
+        """手动触发：根据字数/图片数建议分数（不覆盖教师评分/手动评分）"""
+        word_counts = [s.word_count for s in students if s.word_count > 0 and s.is_valid]
+        if word_counts:
+            self.min_words = min(word_counts)
+            self.max_words = max(word_counts)
+        else:
+            self.min_words = 0
+            self.max_words = 0
+
+        changed = 0
+        for student in students:
             if not student.is_valid:
                 continue
+            if getattr(student, "score_source", "") == "teacher":
+                continue
+            if getattr(student, "score_source", "") == "manual":
+                continue
+
             suggested = self.suggest_score(student.word_count, student.image_count)
-            if suggested is not None:
-                student.score = float(int(suggested))
-                student.score_source = "auto"
-        
-        return self.students
+            if suggested is None:
+                continue
+
+            student.score = float(int(suggested))
+            student.score_source = "auto"
+            changed += 1
+
+        return changed
     
     def parse_document(self, file_path: str) -> StudentInfo:
         """
@@ -148,6 +170,11 @@ class DocParser:
             student.student_id = self._extract_field(full_text, "student_id")
             student.course_name = self._extract_field(full_text, "course_name")
             student.training_name = self._extract_field(full_text, "training_name")
+            
+            try:
+                student.lab_name = self.lab_name_fixer.extract_lab_name_from_doc(doc)
+            except Exception as e:
+                student.lab_name = ""
 
             teacher_score = self._extract_teacher_score(doc)
             if teacher_score is not None:
