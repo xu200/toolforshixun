@@ -139,6 +139,9 @@ def _dpapi_decrypt(protected: bytes) -> Optional[bytes]:
 
 
 def _run_powershell(command: str, timeout: float = 3.0) -> str:
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
     out = subprocess.check_output(
         ["powershell", "-NoProfile", "-Command", command],
         stderr=subprocess.STDOUT,
@@ -146,12 +149,16 @@ def _run_powershell(command: str, timeout: float = 3.0) -> str:
         text=True,
         encoding="utf-8",
         errors="ignore",
+        startupinfo=startupinfo,
     )
     return out
 
 
 def _wmic_value(wmic_args: list[str], key: str) -> Optional[str]:
     try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
         out = subprocess.check_output(
             ["wmic", *wmic_args],
             stderr=subprocess.STDOUT,
@@ -159,6 +166,7 @@ def _wmic_value(wmic_args: list[str], key: str) -> Optional[str]:
             text=True,
             encoding="utf-8",
             errors="ignore",
+            startupinfo=startupinfo,
         )
     except Exception:
         return None

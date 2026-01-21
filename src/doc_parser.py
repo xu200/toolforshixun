@@ -63,11 +63,13 @@ class DocParser:
             r"姓\s*名[：:\s]*([^\s\n\r：:]+)",
             r"学\s*生[：:\s]*([^\s\n\r：:]+)",
             r"姓名[：:\s]+(\S+)",
+            r"姓\s*名\s*[：:]\s*([\u4e00-\u9fa5]{2,4})",  # 支持表格中的中文姓名
         ],
         "student_id": [
             r"学\s*号[：:\s]*(\d{6,12})",
             r"学生学号[：:\s]*(\d{6,12})",
             r"学号[：:\s]+(\d+)",
+            r"学\s*号\s*[：:]\s*(\d{6,12})",  # 支持表格中带空格的格式
             r"(\d{9,12})",  # 直接匹配9-12位数字作为学号
         ],
         "course_name": [
@@ -171,6 +173,14 @@ class DocParser:
             student.course_name = self._extract_field(full_text, "course_name")
             student.training_name = self._extract_field(full_text, "training_name")
             
+            # 如果文档内解析失败，尝试从文件名回退提取
+            if not student.student_id or not student.student_name:
+                fallback_id, fallback_name = self._extract_from_filename(student.file_name)
+                if not student.student_id and fallback_id:
+                    student.student_id = fallback_id
+                if not student.student_name and fallback_name:
+                    student.student_name = fallback_name
+            
             try:
                 student.lab_name = self.lab_name_fixer.extract_lab_name_from_doc(doc)
             except Exception as e:
@@ -184,7 +194,7 @@ class DocParser:
             student.word_count = self._count_effective_words(full_text)
             student.image_count = self._count_images(doc)
             
-            # 检查必要字段
+            # 检查必要字段（放宽条件：只要有字数统计就认为可用）
             missing_fields = []
             if not student.student_id:
                 missing_fields.append("学号")
@@ -192,8 +202,12 @@ class DocParser:
                 missing_fields.append("姓名")
             
             if missing_fields:
-                student.is_valid = False
                 student.error_message = f"缺少字段: {', '.join(missing_fields)}"
+                # 放宽条件：只要有字数统计就认为可用（可以参与自动评分）
+                if student.word_count > 0:
+                    student.is_valid = True  # 仍然可用，只是有警告
+                else:
+                    student.is_valid = False
                 
         except Exception as e:
             student.is_valid = False
@@ -348,6 +362,46 @@ class DocParser:
                 return value
         
         return ""
+    
+    def _extract_from_filename(self, filename: str) -> Tuple[str, str]:
+        """
+        从文件名中提取学号和姓名（作为回退方案）
+        
+        支持的文件名格式：
+        - 202303716-B230602-赖宏-第一次实训.docx
+        - 202303720-B230602-杨文博-第一次实训.docx
+        - 学号_姓名_课程_实训.docx
+        
+        Args:
+            filename: 文件名
+            
+        Returns:
+            (学号, 姓名)
+        """
+        # 去掉扩展名
+        name = os.path.splitext(filename)[0]
+        
+        # 尝试多种分隔符
+        for sep in ['-', '_', ' ']:
+            parts = name.split(sep)
+            if len(parts) >= 2:
+                # 查找学号（纯数字，6-12位）
+                student_id = ""
+                student_name = ""
+                
+                for i, part in enumerate(parts):
+                    part = part.strip()
+                    # 学号：纯数字6-12位
+                    if re.match(r'^\d{6,12}$', part) and not student_id:
+                        student_id = part
+                    # 姓名：2-4个中文字符
+                    elif re.match(r'^[\u4e00-\u9fa5]{2,4}$', part) and not student_name:
+                        student_name = part
+                
+                if student_id or student_name:
+                    return student_id, student_name
+        
+        return "", ""
     
     def get_course_info(self) -> Tuple[str, str]:
         """
