@@ -21,6 +21,9 @@ from .comment_generator import CommentGenerator, CommentWriter
 from .excel_exporter import ExcelExporter
 from .licensing import LicenseManager, LicenseCheckResult, get_machine_code, get_machine_code_display
 from .lab_name_fixer import LabNameFixer
+from .course_name_fixer import CourseNameFixer
+from .summary_window import SummaryWindow
+from .compare_window import CompareWindow
 
 
 class ScoreDelegate(QStyledItemDelegate):
@@ -232,6 +235,7 @@ class MainWindow(QMainWindow):
         self.comment_writer = CommentWriter()
         self.excel_exporter = ExcelExporter()
         self.lab_name_fixer = LabNameFixer()
+        self.course_name_fixer = CourseNameFixer()
 
         self.license_manager = LicenseManager()
         self.license_result: Optional[LicenseCheckResult] = None
@@ -384,22 +388,23 @@ class MainWindow(QMainWindow):
         table_layout = QVBoxLayout(table_group)
         
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["学号", "姓名", "实验室名称", "文件名", "分数", "评语预览"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["学号", "姓名", "课程名称", "实验室名称", "文件名", "分数", "评语预览"])
         
         # 设置列宽
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.Fixed)
-        header.resizeSection(4, 130)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # 学号
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # 姓名
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # 课程名称
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # 实验室名称
+        header.setSectionResizeMode(4, QHeaderView.Stretch)           # 文件名
+        header.setSectionResizeMode(5, QHeaderView.Fixed)             # 分数
+        header.resizeSection(5, 130)
         
         self.table.verticalHeader().setDefaultSectionSize(50)
-        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)           # 评语预览
 
-        self.table.setItemDelegateForColumn(4, ScoreDelegate(self.table))
+        self.table.setItemDelegateForColumn(5, ScoreDelegate(self.table))
         
         # 设置选择模式
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -447,6 +452,11 @@ class MainWindow(QMainWindow):
         self.fix_lab_name_btn.clicked.connect(self.fix_lab_name)
         button_layout.addWidget(self.fix_lab_name_btn)
         
+        # 批量修正课程名称按钮
+        self.fix_course_name_btn = QPushButton("一键修正课程名称")
+        self.fix_course_name_btn.clicked.connect(self.fix_course_name)
+        button_layout.addWidget(self.fix_course_name_btn)
+        
         button_layout.addSpacing(20)
         
         # 生成评语按钮
@@ -470,6 +480,18 @@ class MainWindow(QMainWindow):
         self.export_btn = QPushButton("导出成绩汇总 Excel")
         self.export_btn.clicked.connect(self.export_excel)
         button_layout.addWidget(self.export_btn)
+        
+        button_layout.addSpacing(20)
+        
+        # 多次实训成绩汇总按钮
+        self.summary_btn = QPushButton("多次实训成绩汇总")
+        self.summary_btn.clicked.connect(self.open_summary_window)
+        button_layout.addWidget(self.summary_btn)
+        
+        # 成绩对比检查按钮
+        self.compare_btn = QPushButton("成绩对比检查")
+        self.compare_btn.clicked.connect(self.open_compare_window)
+        button_layout.addWidget(self.compare_btn)
         
         button_layout.addStretch()
         
@@ -499,6 +521,7 @@ class MainWindow(QMainWindow):
         self.auto_score_btn.setEnabled(licensed and has_students and can_auto_score)
         self.rename_btn.setEnabled(licensed and has_students)
         self.fix_lab_name_btn.setEnabled(licensed and has_folder)
+        self.fix_course_name_btn.setEnabled(licensed and has_folder)
         self.generate_btn.setEnabled(licensed and has_scores)
         self.regenerate_btn.setEnabled(licensed and has_comments)
         self.write_btn.setEnabled(licensed and has_comments)
@@ -693,16 +716,22 @@ class MainWindow(QMainWindow):
             name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, 1, name_item)
             
+            # 课程名称
+            course_name = getattr(student, 'course_name', '')
+            course_item = QTableWidgetItem(course_name)
+            course_item.setFlags(course_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 2, course_item)
+            
             # 实验室名称
             lab_name = getattr(student, 'lab_name', '')
             lab_item = QTableWidgetItem(lab_name)
             lab_item.setFlags(lab_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 2, lab_item)
+            self.table.setItem(row, 3, lab_item)
             
             # 文件名
             file_item = QTableWidgetItem(student.file_name)
             file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 3, file_item)
+            self.table.setItem(row, 4, file_item)
             
             # 分数
             score_text = str(int(student.score)) if student.score is not None else ""
@@ -710,7 +739,7 @@ class MainWindow(QMainWindow):
             score_item.setFont(QFont("微软雅黑", 10))
             score_item.setTextAlignment(Qt.AlignCenter)
             score_item.setFlags(score_item.flags() | Qt.ItemIsEditable)
-            self.table.setItem(row, 4, score_item)
+            self.table.setItem(row, 5, score_item)
 
             score_source = getattr(student, 'score_source', "")
             if score_source == "teacher":
@@ -724,11 +753,11 @@ class MainWindow(QMainWindow):
             comment_preview = student.comment[:50] + "..." if len(student.comment) > 50 else student.comment
             comment_item = QTableWidgetItem(comment_preview)
             comment_item.setFlags(comment_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 5, comment_item)
+            self.table.setItem(row, 6, comment_item)
             
             # 标记无效行
             if not student.is_valid:
-                for col in range(6):
+                for col in range(7):
                     item = self.table.item(row, col)
                     if item:
                         item.setBackground(QColor(255, 230, 230))
@@ -738,7 +767,7 @@ class MainWindow(QMainWindow):
     
     def on_score_changed(self, row: int, col: int):
         """分数变更处理"""
-        if col != 4:
+        if col != 5:
             return
         
         item = self.table.item(row, col)
@@ -783,7 +812,7 @@ class MainWindow(QMainWindow):
     
     def on_cell_double_clicked(self, row: int, col: int):
         """双击单元格处理"""
-        if col == 5:  # 评语列
+        if col == 6:  # 评语列
             self.edit_comment(row)
     
     def edit_comment(self, row: int):
@@ -804,7 +833,7 @@ class MainWindow(QMainWindow):
         comment_preview = student.comment[:50] + "..." if len(student.comment) > 50 else student.comment
         comment_item = QTableWidgetItem(comment_preview)
         comment_item.setFlags(comment_item.flags() & ~Qt.ItemIsEditable)
-        self.table.setItem(row, 5, comment_item)
+        self.table.setItem(row, 6, comment_item)
     
     def rename_files(self):
         """重命名文件"""
@@ -987,3 +1016,94 @@ class MainWindow(QMainWindow):
 
         if success_count > 0:
             self._reparse_documents_silent()
+
+    def fix_course_name(self):
+        """批量修正课程名称"""
+        if not (getattr(self, "license_result", None) and self.license_result.ok):
+            dialog = ActivationDialog(self.license_manager, self)
+            dialog.exec()
+            try:
+                self.license_result = self.license_manager.check()
+            except Exception:
+                self.license_result = LicenseCheckResult(False, "未激活")
+            self.update_button_states()
+            if not (getattr(self, "license_result", None) and self.license_result.ok):
+                return
+
+        if not self.folder_path:
+            QMessageBox.warning(self, "警告", "请先选择文件夹")
+            return
+        
+        current_course_name = ""
+        if self.students:
+            for s in self.students:
+                if s.course_name:
+                    current_course_name = s.course_name
+                    break
+        
+        new_course_name, ok = QInputDialog.getText(
+            self, "批量修正课程名称",
+            f"当前课程名称: {current_course_name if current_course_name else '(未检测到)'}\n\n"
+            "请输入新的课程名称：",
+            text=current_course_name if current_course_name else "",
+        )
+        
+        if not ok:
+            return
+        
+        new_course_name = new_course_name.strip()
+        if not new_course_name:
+            QMessageBox.warning(self, "警告", "课程名称不能为空")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认",
+            f"确定要将所有文档的课程名称统一修改为：\n\n{new_course_name}\n\n"
+            "此操作将直接修改文件，无法撤销！",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.No:
+            return
+        
+        self.status_bar.showMessage("正在批量修正课程名称...")
+        
+        success_files, failed_files = self.course_name_fixer.batch_fix_course_name(
+            self.folder_path, new_course_name
+        )
+        
+        total = len(success_files) + len(failed_files)
+        success_count = len(success_files)
+        
+        self.status_bar.showMessage(
+            f"修正完成: {success_count}/{total} 成功"
+        )
+        
+        if failed_files:
+            failed_info = "\n".join(failed_files[:20])
+            if len(failed_files) > 20:
+                failed_info += f"\n... 还有 {len(failed_files) - 20} 个文件"
+            
+            QMessageBox.warning(
+                self, "部分失败",
+                f"成功: {success_count} 个文件\n失败: {len(failed_files)} 个文件\n\n"
+                f"失败文件:\n{failed_info}"
+            )
+        else:
+            QMessageBox.information(
+                self, "成功",
+                f"已成功修正 {success_count} 个文件的课程名称"
+            )
+
+        if success_count > 0:
+            self._reparse_documents_silent()
+
+    def open_summary_window(self):
+        """打开多次实训成绩汇总窗口"""
+        dialog = SummaryWindow(self)
+        dialog.exec()
+
+    def open_compare_window(self):
+        """打开成绩对比检查窗口"""
+        dialog = CompareWindow(self)
+        dialog.exec()
